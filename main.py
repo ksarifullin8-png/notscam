@@ -4,7 +4,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError, FloodWaitError
+from telethon.errors import SessionPasswordNeededError, FloodWaitError, UsernameNotOccupiedError
 from telethon.network.connection.tcpabridged import ConnectionTcpAbridged
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, StateFilter
@@ -20,11 +20,11 @@ API_ID = 35800959  # СМЕНИТЬ!
 API_HASH = '708e7d0bc3572355bcaf68562cc068f1'  # СМЕНИТЬ!
 
 # === ПРИВАТНЫЕ КАНАЛЫ ДЛЯ ПОДПИСКИ ===
-# Укажите ID или username каналов (можно в формате @username или -100xxxxxxxxx)
+# Можно указывать как username (@channel) так и ID (-100xxxxxxxxx)
 REQUIRED_CHANNELS = [
-    "-1003787925496",  # Замените на ваш канал
-    "-1003828940939",  # Замените на ваш канал
-    "-1003630830270"   # Замените на ваш канал
+    -1003787925496,  # ID канала
+    -1003828940939,  # ID канала
+    -1003630830270   # ID канала
 ]
 
 # Прокси (опционально)
@@ -65,6 +65,16 @@ def create_client(user_id):
         )
     return TelegramClient(session_file, API_ID, API_HASH)
 
+def format_channel_link(channel):
+    """Форматирует ссылку на канал для кнопки"""
+    if isinstance(channel, int):
+        # Для ID канала ссылку не сделать, показываем ID
+        return None, str(channel)
+    else:
+        # Для username делаем ссылку
+        clean = channel.replace('@', '')
+        return f"https://t.me/{clean}", clean
+
 async def check_subscriptions(user_id, client):
     """Проверяет подписку на все обязательные каналы"""
     not_subscribed = []
@@ -72,18 +82,17 @@ async def check_subscriptions(user_id, client):
     for channel in REQUIRED_CHANNELS:
         try:
             # Пробуем получить участника
-            participant = await client.get_participant(channel)
+            await client.get_participant(channel)
             # Если дошли сюда - пользователь в канале
             continue
         except FloodWaitError as e:
             await asyncio.sleep(e.seconds)
-            # Повторяем проверку
             try:
-                participant = await client.get_participant(channel)
+                await client.get_participant(channel)
                 continue
             except:
                 not_subscribed.append(channel)
-        except:
+        except Exception:
             # Пользователь не подписан или ошибка
             not_subscribed.append(channel)
     
@@ -127,12 +136,18 @@ def get_channels_keyboard(not_subscribed):
     """Создает клавиатуру с кнопками для подписки на каналы"""
     buttons = []
     for channel in not_subscribed:
-        # Убираем @ если есть
-        clean_channel = channel.replace('@', '')
-        buttons.append([InlineKeyboardButton(
-            text=f"📢 Подписаться на {clean_channel}",
-            url=f"https://t.me/{clean_channel}"
-        )])
+        link, display = format_channel_link(channel)
+        if link:
+            buttons.append([InlineKeyboardButton(
+                text=f"📢 Подписаться на {display}",
+                url=link
+            )])
+        else:
+            # Для ID канала показываем без ссылки
+            buttons.append([InlineKeyboardButton(
+                text=f"📢 Канал {display} (введите ID в поиске)",
+                callback_data="no_action"
+            )])
     buttons.append([InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")])
     buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_auth")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -375,6 +390,10 @@ async def cancel_auth(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("❌ Авторизация отменена.\nИспользуйте /start")
     await state.clear()
     await callback.answer()
+
+@dp.callback_query(F.data == "no_action")
+async def no_action(callback: types.CallbackQuery):
+    await callback.answer("Введите ID канала в поиске Telegram и подпишитесь", show_alert=True)
 
 @dp.callback_query(F.data == "support")
 async def support(callback: types.CallbackQuery):
